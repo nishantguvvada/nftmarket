@@ -9,10 +9,10 @@ import {
     createNoopSigner,
     signerIdentity,
 } from "@metaplex-foundation/umi";
-import { fromWeb3JsPublicKey, toWeb3JsTransaction, toWeb3JsLegacyTransaction } from "@metaplex-foundation/umi-web3js-adapters";
+import { fromWeb3JsPublicKey, toWeb3JsPublicKey, toWeb3JsTransaction, toWeb3JsKeypair, toWeb3JsLegacyTransaction } from "@metaplex-foundation/umi-web3js-adapters";
 import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { irysUploader } from "@metaplex-foundation/umi-uploader-irys";
-import { Connection } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
 
 export const createCollection = async (inputImage, user, connection) => {
 
@@ -30,31 +30,30 @@ export const createCollection = async (inputImage, user, connection) => {
         signAllTransactions: async (txs) => txs,
     }
 
+    // generate mint keypair
+    const collectionMint = generateSigner(umi);
+    const web3jsCollectionMint = toWeb3JsKeypair(collectionMint);
+
     umi
         .use(signerIdentity(signer))
         .use(mplTokenMetadata())
         .use(irysUploader());
     
-    umi.payer = signer;
-
-    // const file = await createGenericFileFromBrowserFile(inputImage);
-    // const [image] = await umi.uploader.upload([file]);
-    // console.log("image uri:", image);
+    const file = await createGenericFileFromBrowserFile(inputImage);
+    const [image] = await umi.uploader.upload([file]);
+    console.log("image uri:", image);
     
-    // // upload offchain json to Arweave using irys
-    // const uri = await umi.uploader.uploadJson({
-    //     name: "NX 2 Collection",
-    //     symbol: "NX 2",
-    //     description: "NX 2 Collection is a sample created to add to the portfolio projects.",
-    //     image,
-    // });
-    // console.log("Collection offchain metadata URI:", uri);
-
-    // generate mint keypair
-    const collectionMint = generateSigner(umi);
+    // upload offchain json to Arweave using irys
+    const uri = await umi.uploader.uploadJson({
+        name: "NX 2 Collection",
+        symbol: "NX 2",
+        description: "NX 2 Collection is a sample created to add to the portfolio projects.",
+        image,
+    });
+    console.log("Collection offchain metadata URI:", uri);
     
     // create and mint NFT
-    const tx = createNft(umi, {
+    const tx = await createNft(umi, {
         mint: collectionMint,
         name: "NX 2 Collection",
         symbol: "NX 2",
@@ -62,25 +61,30 @@ export const createCollection = async (inputImage, user, connection) => {
         updateAuthority: user.publicKey,
         sellerFeeBasisPoints: percentAmount(0),
         isCollection: true,
-    });
+    }).buildWithLatestBlockhash(umi);
 
-    tx.useV0();
+    // const transaction = await collectionMint.signTransaction(tx);
 
-    const transaction = await tx.buildWithLatestBlockhash(umi);
-
-    const web3jsTransaction = toWeb3JsLegacyTransaction(transaction);
+    const web3jsTransaction = toWeb3JsLegacyTransaction(tx);
     
     web3jsTransaction.feePayer = user.publicKey;
+
     // get latest blockhash
     web3jsTransaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
-    const signedTx = await user.signTransaction(web3jsTransaction);
+    // partialSign using the other account with keypair
+    web3jsTransaction.partialSign(web3jsCollectionMint);
+
+    const signedTx = await user.signTransaction(web3jsTransaction, connection, { skipPreflight: true});
     console.log("Signed Transaction", signedTx);
+
     // send transaction
-    const txId = await connection.sendRawTransaction(signedTx.serialize());
+    const txId = await connection.sendRawTransaction(signedTx.serialize({ requireAllSignatures: false, verifySignatures: false }));
     console.log("Transaction ID", txId);
+
     // confirmTransaction returns a signature
     const signature = await connection.confirmTransaction(txId, "confirmed");
+    console.log("sign",signature);
 
     console.log(`Collection NFT address is:`, collectionMint.publicKey);
     console.log("✅ Finished successfully!");
